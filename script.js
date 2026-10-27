@@ -351,7 +351,7 @@
     while (performance.now() - t0 < ms) {
       var c;
       do { c = chars[Math.floor(Math.random() * chars.length)]; } while (chars.length > 1 && c === last);
-      last = c; showEgg(c); eggName.textContent = c.name;
+      last = c; showEgg(c); eggName.textContent = c.name; sfxTick();
       var p = (performance.now() - t0) / ms;
       await sleep(55 + p * p * 150);
     }
@@ -377,7 +377,7 @@
   }
 
   /* 화면 가운데 자막: 하나가 뜨고 지나가면 다음 자막이 뜬다 */
-  async function announce(label, names, final, ms, k, onSettle) {
+  async function announce(label, names, final, ms, k, onSettle, onLock) {
     annK.textContent = label;
     ann.style.removeProperty('--c');
     ann.classList.remove('out', 'locked');
@@ -386,11 +386,12 @@
     while (performance.now() - t0 < ms) {
       var n;
       do { n = names[Math.floor(Math.random() * names.length)]; } while (names.length > 1 && n === last);
-      last = n; annV.textContent = n;
+      last = n; annV.textContent = n; sfxTick();
       var p = (performance.now() - t0) / ms;
       await sleep(55 + p * p * 150);
     }
     annV.textContent = final.n;
+    if (onLock) onLock();
     ann.style.setProperty('--c', final.c);
     ann.classList.remove('spinning'); ann.classList.add('locked');
     await sleep(1000 * k + 200);
@@ -497,9 +498,224 @@
     loadEgg(id);
   });
 
+  /* ---------- 소리 (Web Audio로 직접 합성, 별도 파일 없음) ---------- */
+  var AC = null, master = null, wet = null, noiseBuf = null;
+  var soundOn = load('egg.sound', true) !== false;
+  function initOut(ctx) {
+    AC = ctx;
+    master = ctx.createGain(); master.gain.value = 0.6;
+    var comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -16; comp.knee.value = 12; comp.ratio.value = 8; comp.attack.value = 0.002; comp.release.value = 0.25;
+    master.connect(comp); comp.connect(ctx.destination);
+    wet = ctx.createGain(); wet.gain.value = 1;
+    var dl = ctx.createDelay(1), fb = ctx.createGain(), lp = ctx.createBiquadFilter();
+    dl.delayTime.value = 0.19; fb.gain.value = 0.38; lp.type = 'lowpass'; lp.frequency.value = 2800;
+    wet.connect(dl); dl.connect(lp); lp.connect(fb); fb.connect(dl); lp.connect(master);
+    var len = Math.floor(ctx.sampleRate * 2), seed = 12345;
+    noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+    var d = noiseBuf.getChannelData(0);
+    for (var i = 0; i < len; i++) { seed = (seed * 1664525 + 1013904223) % 4294967296; d[i] = seed / 2147483648 - 1; }
+  }
+  function audio() {
+    if (!soundOn) return null;
+    if (!AC) {
+      try { initOut(new (window.AudioContext || window.webkitAudioContext)()); } catch (e) { AC = null; return null; }
+    }
+    if (AC.state === 'suspended' && typeof AC.startRendering !== 'function') {
+      var rp = AC.resume();
+      if (rp && rp.catch) rp.catch(function () {});
+    }
+    return AC;
+  }
+  function hz(m) { return 440 * Math.pow(2, (m - 69) / 12); }
+  function tone(f, t0, dur, o) {
+    o = o || {};
+    var ctx = AC, osc = ctx.createOscillator(), g = ctx.createGain(), v = o.vol === undefined ? 0.2 : o.vol;
+    var a = Math.min(o.atk || 0.006, dur * 0.9);
+    osc.type = o.type || 'sine';
+    osc.frequency.setValueAtTime(f, t0);
+    if (o.to) osc.frequency.exponentialRampToValueAtTime(Math.max(20, o.to), t0 + dur);
+    if (o.det) osc.detune.value = o.det;
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, v), t0 + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    var src = osc;
+    if (o.lp) { var fl = ctx.createBiquadFilter(); fl.type = 'lowpass'; fl.frequency.value = o.lp; osc.connect(fl); src = fl; }
+    src.connect(g); g.connect(master);
+    if (o.wet) { var sw = ctx.createGain(); sw.gain.value = o.wet; g.connect(sw); sw.connect(wet); }
+    osc.start(t0); osc.stop(t0 + dur + 0.05);
+  }
+  function noise(t0, dur, o) {
+    o = o || {};
+    var ctx = AC, src = ctx.createBufferSource(), fl = ctx.createBiquadFilter(), g = ctx.createGain(), v = o.vol === undefined ? 0.2 : o.vol;
+    var a = Math.min(o.atk || 0.004, dur * 0.9);
+    src.buffer = noiseBuf; src.loop = true;
+    fl.type = o.type || 'highpass';
+    fl.frequency.setValueAtTime(o.f || 2000, t0);
+    if (o.to) fl.frequency.exponentialRampToValueAtTime(Math.max(20, o.to), t0 + dur);
+    fl.Q.value = o.q || 0.8;
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, v), t0 + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    src.connect(fl); fl.connect(g); g.connect(master);
+    if (o.wet) { var sw = ctx.createGain(); sw.gain.value = o.wet; g.connect(sw); sw.connect(wet); }
+    src.start(t0, (o.off || 0) % 1.5); src.stop(t0 + dur + 0.05);
+  }
+  function bell(m, t, d, v, w) {
+    tone(hz(m), t, d, { vol: v, wet: w === undefined ? 0.35 : w });
+    tone(hz(m) * 2, t, d * 0.6, { vol: v * 0.25 });
+    tone(hz(m) * 2.76, t, d * 0.4, { vol: v * 0.2 });
+  }
+  function pad(notes, t, dur, v, cut) {
+    notes.forEach(function (m, i) {
+      [-7, 7].forEach(function (dt) { tone(hz(m), t + i * 0.03, dur, { type: 'sawtooth', vol: v, atk: dur * 0.45, lp: cut || 1600, det: dt, wet: 0.4 }); });
+    });
+  }
+  function rr(a, b) { return a + Math.random() * (b - a); }
+
+  /* 에그 굴리는 소리 */
+  function sfxTick() {
+    var c = audio(); if (!c) return;
+    var t = c.currentTime + 0.005;
+    noise(t, 0.03, { type: 'highpass', f: 3500, vol: 0.12 });
+    tone(1500, t, 0.04, { type: 'square', vol: 0.03 });
+  }
+  /* 에그 깨지는 소리: 모든 뽑기에서 똑같은 소리 */
+  function sfxCharge(sec) {
+    var c = audio(); if (!c) return;
+    var t = c.currentTime + 0.02, N = 16;
+    for (var i = 0; i < N; i++) {
+      var u = i / N, tt = t + sec * Math.pow(u, 1.7);
+      noise(tt, 0.02, { type: 'highpass', f: 2800 + (i % 4) * 700, vol: 0.05 + 0.1 * u });
+      tone(900 + (i * 137) % 900, tt, 0.025, { type: 'triangle', vol: 0.02 + 0.03 * u });
+    }
+  }
+  function sfxCrack() {
+    var c = audio(); if (!c) return;
+    var t = c.currentTime + 0.01;
+    noise(t, 0.16, { type: 'highpass', f: 1800, vol: 0.4, atk: 0.002 });
+    noise(t, 0.3, { type: 'bandpass', f: 900, q: 0.8, vol: 0.28, atk: 0.002 });
+    tone(150, t, 0.28, { to: 48, vol: 0.45, atk: 0.002 });
+    [2100, 2900, 3600, 4300, 3200, 5000].forEach(function (f, i) { tone(f, t + 0.03 + i * 0.045, 0.1, { vol: 0.05, wet: 0.3 }); });
+  }
+
+  /* 등급: 좋을수록 음이 많아지고 높아져요 (tier 0~4) */
+  function sfxGrade(tier) {
+    var c = audio(); if (!c) return;
+    var t = c.currentTime + 0.01;
+    var seq = [[72], [72, 76], [72, 76, 79], [72, 76, 79, 84], [72, 76, 79, 84, 88, 91]][tier];
+    seq.forEach(function (m, i) { bell(m, t + i * 0.07, 0.5 + tier * 0.15, 0.13 + tier * 0.02); });
+    if (tier >= 3) noise(t + 0.1, 0.5, { type: 'highpass', f: 6000, vol: 0.03 + (tier - 3) * 0.03, atk: 0.3 });
+    if (tier === 4) { tone(hz(60), t, 0.9, { type: 'triangle', vol: 0.12, wet: 0.3 }); tone(hz(67), t, 0.9, { type: 'triangle', vol: 0.09, wet: 0.3 }); }
+  }
+  /* 레어도: 종소리가 화음으로 쌓이고, 마이스는 큰 상승음과 충격음까지 (tier 0~5) */
+  function sfxRarity(tier) {
+    var c = audio(); if (!c) return;
+    var t = c.currentTime + 0.01, d = tier >= 5 ? 0.55 : 0;
+    var seqs = [[67], [64, 71], [64, 67, 71, 76], [60, 64, 67, 72, 76, 79], [60, 64, 67, 72, 76, 79, 84, 88], [60, 64, 67, 72, 76, 79, 84, 88, 91, 96]];
+    seqs[tier].forEach(function (m, i) { bell(m, t + d + i * 0.055, 0.7 + tier * 0.15, 0.12 + tier * 0.015, 0.4); });
+    if (tier >= 4) pad([48, 55, 60], t + d, 1.4, 0.05 + (tier - 4) * 0.02);
+    if (tier >= 5) {
+      noise(t, 0.6, { type: 'bandpass', f: 300, to: 6000, q: 1.2, vol: 0.2, atk: 0.5 });
+      tone(55, t + d, 1.4, { to: 38, vol: 0.5 });
+      noise(t + d, 0.9, { type: 'lowpass', f: 2500, to: 300, vol: 0.3, atk: 0.01 });
+    }
+  }
+  /* 에그 인첸트: 종류마다 느낌이 다르고, 뒤로 갈수록 화려해요 (tier 0~4) */
+  function sfxEnchant(name) {
+    var c = audio(); if (!c) return;
+    var t = c.currentTime + 0.01, i;
+    if (name === '니트로') {
+      tone(180, t, 0.28, { type: 'sawtooth', to: 1100, vol: 0.2, lp: 2600 });
+      tone(1100, t + 0.28, 0.16, { type: 'square', vol: 0.12 });
+      noise(t + 0.27, 0.07, { type: 'bandpass', f: 3000, q: 1.2, vol: 0.12 });
+    } else if (name === '오메가') {
+      pad([45, 52, 57, 61], t, 1.5, 0.07, 1100);
+      tone(110, t, 0.5, { to: 55, vol: 0.35 });
+      noise(t, 0.25, { type: 'lowpass', f: 900, vol: 0.2 });
+      bell(69, t + 0.2, 1.0, 0.1);
+    } else if (name === '코스믹') {
+      var sp = [76, 79, 81, 84, 88, 91];
+      for (i = 0; i < 9; i++) bell(sp[Math.floor(Math.random() * sp.length)], t + i * 0.09, 0.9, 0.09, 0.6);
+      noise(t, 1.0, { type: 'bandpass', f: 2500, to: 6000, q: 2, vol: 0.06, atk: 0.6, wet: 0.5 });
+      tone(hz(48), t, 1.2, { vol: 0.08, atk: 0.5, wet: 0.5 });
+    } else if (name === '스크램블드') {
+      for (i = 0; i < 7; i++) {
+        var gt = t + i * 0.055 + Math.random() * 0.02;
+        tone(rr(120, 2000), gt, 0.05, { type: 'square', vol: 0.06 });
+        noise(gt, 0.04, { type: 'bandpass', f: rr(800, 4800), vol: 0.1 });
+      }
+      tone(900, t + 0.4, 0.3, { type: 'sawtooth', to: 90, vol: 0.08, lp: 1500 });
+    } else if (name === '골든') {
+      var gs = [0, 4, 7, 12, 7, 12, 16, 19, 16, 24];
+      for (i = 0; i < 10; i++) {
+        tone(hz(84 + gs[i]), t + i * 0.05, 0.25, { vol: 0.09, wet: 0.4 });
+        tone(hz(84 + gs[i]) * 2, t + i * 0.05, 0.12, { vol: 0.03 });
+      }
+      noise(t, 0.7, { type: 'highpass', f: 7000, vol: 0.06, atk: 0.4 });
+      [84, 88, 91, 96].forEach(function (m, j) { bell(m, t + 0.55 + j * 0.02, 1.0, 0.12); });
+    }
+  }
+  /* 축복: 신성한 소리이고, 뒤로 갈수록 길고 웅장해요 (tier 0~6) */
+  function sfxBlessing(name) {
+    var c = audio(); if (!c) return;
+    var t = c.currentTime + 0.12, i;
+    if (name === 'Holy') {
+      pad([60, 67, 72], t, 1.5, 0.05);
+      bell(84, t + 0.1, 1.2, 0.1); bell(88, t + 0.3, 1.2, 0.08);
+    } else if (name === 'Divine') {
+      pad([57, 64, 69, 76], t, 2.0, 0.055);
+      noise(t, 1.6, { type: 'highpass', f: 5000, vol: 0.04, atk: 0.9 });
+      [84, 88, 91, 96].forEach(function (m, j) { bell(m, t + 0.25 + j * 0.18, 1.2, 0.09); });
+    } else if (name === 'Hallowed') {
+      pad([55, 62, 67, 74, 79], t, 2.3, 0.055);
+      bell(43, t, 2.0, 0.2, 0.3);
+      [79, 86, 91].forEach(function (m, j) { bell(m, t + 0.3 + j * 0.22, 1.4, 0.09); });
+    } else if (name === 'Saintly') {
+      var hp = [0, 2, 4, 7, 9, 12, 14, 16, 19];
+      for (i = 0; i < 9; i++) tone(hz(72 + hp[i]), t + i * 0.09, 0.7, { type: 'triangle', vol: 0.14, wet: 0.5 });
+      pad([60, 64, 67, 72, 76], t + 0.3, 2.2, 0.055);
+    } else if (name === 'Inferno') {
+      noise(t, 2.2, { type: 'lowpass', f: 200, to: 1400, vol: 0.35, atk: 1.2, q: 1.5 });
+      tone(45, t, 2.2, { to: 38, vol: 0.4, atk: 0.5 });
+      tone(110, t, 1.6, { type: 'sawtooth', vol: 0.07, lp: 500, atk: 0.6 });
+      tone(116.5, t, 1.6, { type: 'sawtooth', vol: 0.06, lp: 500, atk: 0.6 });
+      for (i = 0; i < 14; i++) noise(t + 0.2 + i * 0.14 + Math.random() * 0.05, 0.04, { type: 'highpass', f: rr(2000, 5000), vol: 0.15 });
+    } else if (name === 'Infinity') {
+      for (i = 0; i < 18; i++) bell(60 + [0, 2, 4, 7, 9][i % 5] + 12 * Math.floor(i / 5), t + i * 0.055, 0.7, 0.09, 0.5);
+      pad([60, 67, 72, 76, 79], t + 0.7, 2.4, 0.06);
+      noise(t + 0.3, 1.6, { type: 'highpass', f: 4000, vol: 0.05, atk: 0.8 });
+    } else if (name === 'Godly') {
+      tone(60, t, 1.8, { to: 28, vol: 0.65 });
+      noise(t, 0.7, { type: 'lowpass', f: 1200, to: 200, vol: 0.45, atk: 0.005 });
+      pad([48, 55, 60, 64, 67, 72, 76, 79], t + 0.05, 3.4, 0.06, 2200);
+      var cs = [103, 100, 96, 91, 88, 84, 79, 76, 72, 67, 64, 60];
+      for (i = 0; i < cs.length; i++) bell(cs[i], t + 0.15 + i * 0.1, 1.3, 0.1);
+      noise(t, 2.4, { type: 'highpass', f: 6000, vol: 0.07, atk: 1.2 });
+      bell(84, t + 1.6, 2.4, 0.16, 0.5);
+    }
+  }
+  function tierOf(key, name) {
+    var t = TABLES[key], i = t.map(function (x) { return x.n; }).indexOf(name);
+    return (key === 'enchant' || key === 'blessing') ? i : t.length - 1 - i;
+  }
+  function playReveal(key, res) {
+    if (key === 'grade') sfxGrade(tierOf('grade', res.n));
+    else if (key === 'rarity') sfxRarity(tierOf('rarity', res.n));
+    else if (key === 'enchant') sfxEnchant(res.n);
+  }
+  var soundBox = $('#sound');
+  soundBox.checked = soundOn;
+  soundBox.addEventListener('change', function () {
+    soundOn = soundBox.checked;
+    save('egg.sound', soundOn);
+    if (soundOn) sfxTick();
+  });
+
   async function draw() {
     if (busy || !chars.length) return;
     busy = true;
+    audio();
     var btn = $('#drawBtn');
     btn.disabled = true; btn.textContent = '부화 중…';
     var k = $('#fast').checked ? 0.35 : 1;
@@ -516,15 +732,17 @@
     for (var i = 0; i < keys.length; i++) {
       var res = pick(keys[i]);
       results.push(res);
-      await announce(LABELS[keys[i]], TABLES[keys[i]].map(function (x) { return x.n; }), res, (950 + i * 150) * k, k, (function (key, r) { return function () { settle(key, r); }; })(keys[i], res));
+      await announce(LABELS[keys[i]], TABLES[keys[i]].map(function (x) { return x.n; }), res, (950 + i * 150) * k, k, (function (key, r) { return function () { settle(key, r); }; })(keys[i], res), (function (key, r) { return function () { playReveal(key, r); }; })(keys[i], res));
     }
 
     /* 5. 축복 (이펙트) */
     var bless = pick('blessing');
     results.push(bless);
     eggEl.classList.remove('wobble'); eggEl.classList.add('charge');
+    sfxCharge(1.1 * k);
     await sleep(1100 * k);
     eggEl.classList.remove('charge');
+    sfxCrack(); sfxBlessing(bless.n);
     applyBlessing(bless);
     settle('blessing', bless);
     eggEl.classList.add('landed');
