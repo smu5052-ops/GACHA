@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>에그 뽑기</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath d='M50 6C72 6 88 42 88 66C88 86 72 96 50 96C28 96 12 86 12 66C12 42 28 6 50 6Z' fill='%23ffc94a'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Noto+Sans+KR:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>에그 뽑기</h1>
+    <ol class="flow" aria-label="뽑기 순서">
+      <li>에그</li><li>등급</li><li>레어도</li><li>에그 인첸트</li><li>축복</li>
+    </ol>
+  </header>
+
+  <div class="layout">
+    <div class="col">
+      <section class="panel" aria-labelledby="hatch-title">
+        <div class="panel-head">
+          <h2 id="hatch-title">부화장</h2>
+          <small>총 <span id="total">0</span>회 · 누적 <span id="sumScore">0</span>점 · 최고 <span id="bestScore">0</span>점</small>
+        </div>
+        <div class="egg-stage" id="stage" aria-live="polite">
+          <div class="egg-box">
+            <div class="pedestal" id="pedestal" aria-hidden="true"><span class="pd-beam"></span><span class="pd-glow"></span><span class="pd-tier"></span><span class="pd-side"></span><span class="pd-top"></span></div>
+            <div class="egg-wrap idle" id="egg"></div>
+            <div class="grade-badge" id="gradeBadge" role="img" aria-label="등급"><span>—</span></div>
+          </div>
+          <div class="egg-name" id="eggName">무슨 에그가 나올까?</div>
+          <div class="result-line" id="resultLine">
+            <span class="pill" data-key="rarity">—</span>
+            <span class="pill" data-key="enchant">—</span>
+            <span class="pill" data-key="blessing">—</span>
+          </div>
+          <div class="score" id="score"><span class="sl">점수</span><b id="scoreNum">0</b><small id="scoreFormula"></small></div>
+          <div class="announce" id="announce"><div class="ann-box"><div class="k"></div><div class="v"></div></div></div>
+          <canvas id="fx" aria-hidden="true"></canvas>
+        </div>
+        <button class="draw" id="drawBtn" type="button">에그 뽑기</button>
+        <div class="opts">
+          <label class="opt" for="fast"><input type="checkbox" id="fast"> 빠르게 보기</label>
+        </div>
+
+      </section>
+
+      <section class="panel" aria-labelledby="vault-title">
+        <div class="panel-head">
+          <h2 id="vault-title">에그 보관함</h2>
+          <small><span id="vaultCount">0</span>개 보관 중</small>
+        </div>
+        <div class="vault-tools">
+          <div class="seg" role="group" aria-label="정렬">
+            <button class="btn" type="button" id="sortNew" aria-pressed="true">최신순</button>
+            <button class="btn" type="button" id="sortScore" aria-pressed="false">점수순</button>
+          </div>
+          <small class="hint">에그를 누르면 부화장으로 불러와요</small>
+        </div>
+        <p class="empty" id="vaultEmpty">뽑은 에그는 여기에 자동으로 보관돼요.</p>
+        <ul class="vault" id="vault"></ul>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="panel" aria-labelledby="char-title">
+        <div class="panel-head">
+          <h2 id="char-title">캐릭터 에그</h2>
+          <small><span id="count">0</span>개</small>
+        </div>
+        <p class="help">에그는 캐릭터마다 하나씩 있고, 뽑힐 확률은 모두 같아요.</p>
+        <ul class="chars" id="charList"></ul>
+      </section>
+
+      <section class="panel" aria-labelledby="odds-title">
+        <div class="panel-head">
+          <h2 id="odds-title">확률</h2>
+          <small>등급·레어도는 점수, 나머지는 배수</small>
+        </div>
+        <div id="odds"></div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script src="characters.js"></script>
+<script src="script.js"></script>
+</body>
+</html>
